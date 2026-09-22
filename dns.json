@@ -1,0 +1,10 @@
+{
+    "tld": "rws",
+    "serial": 1,
+    "records": {
+        "reweb.rws": {
+            "address": "24.144.109.255:5000",
+            "ttl": 300
+        }
+    }
+}
