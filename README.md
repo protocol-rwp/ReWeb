@@ -38,3 +38,7 @@ Other servers pick up your claim (and you pick up theirs) via
 `python3 dnsroots.py peer <host>:<port>`.
 
 
+## What this is
+This is my implementation of the ReWeb (the codes not perfect lol),
+ Anyone can make a new implementation, a new browser etc. 
+ - [See the license](LICENSE)
