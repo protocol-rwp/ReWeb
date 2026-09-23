@@ -37,6 +37,8 @@ Other servers pick up your claim (and you pick up theirs) via
 `python3 dnsroots.py sync`, once you've added each other as peers with
 `python3 dnsroots.py peer <host>:<port>`.
 
+## Where to get a free site name
+In the ReWeb browser enter `reweb.rws/request.html` into the input bar and fill out the form.
 
 ## What this is
 This is my implementation of the ReWeb (the codes not perfect lol),
