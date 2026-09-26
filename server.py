@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, parse_qs, unquote
 import dnsreg
 import dnsroots
 import jsengine
+import phpengine
 import rwp
 
 HOST = "127.0.0.1"
@@ -42,6 +43,7 @@ CONTENT_TYPES = {
     ".woff2": "font/woff2",
     ".mp3": "audio/mpeg",
     ".rws": "text/html; charset=utf-8",
+    ".php": "text/html; charset=utf-8",
 }
 
 
@@ -235,7 +237,10 @@ def handle_request(header, body, client_ip=""):
         return build_response("403 Forbidden", "<h1>403 Forbidden</h1>")
 
     if os.path.isdir(file_path):
-        file_path = os.path.join(file_path, "index.html")
+        index = os.path.join(file_path, "index.html")
+        if not os.path.isfile(index) and os.path.isfile(os.path.join(file_path, "index.php")):
+            index = os.path.join(file_path, "index.php")
+        file_path = index
 
     if not os.path.isfile(file_path):
         return build_response("404 Not Found", "<h1>404 Not Found</h1>")
@@ -253,6 +258,14 @@ def handle_request(header, body, client_ip=""):
             error_html = "<h1>500 Script Error</h1><pre>" + html.escape(str(e)) + "</pre>"
             return build_response("500 Internal Server Error", error_html)
         return build_response("200 OK", body_out, guess_content_type(file_path))
+
+    if file_path.endswith(".php"):
+        try:
+            status, body_out, content_type, location = phpengine.run(file_path, WWW_ROOT, method, path, split.query, headers.get("content-type", ""), body, client_ip, HOST, PORT)
+        except phpengine.PhpError as e:
+            error_html = "<h1>500 Script Error</h1><pre>" + html.escape(str(e)) + "</pre>"
+            return build_response("500 Internal Server Error", error_html)
+        return build_response(status, body_out, content_type, location)
 
     if method == "POST":
         return build_response("405 Method Not Allowed", "<h1>405 Method Not Allowed</h1>")

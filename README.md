@@ -21,6 +21,7 @@ Using its own transport protocol instead of HTTP, its own decentralized naming s
 ## Requirements
 - Python 3 with `cryptography` (install it with `pip install cryptography`).
 - Node.js (only needed for running servers that host `.rws` server scripts).
+- php-cgi (only needed for running servers that host `.php` pages. install with `sudo apt install php-cgi`).
 - GTK 3, WebKit2GTK 4.1, and `pywebview` (only needed to run the example browser).
 
 ## Running a server
