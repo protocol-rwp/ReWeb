@@ -1,4 +1,5 @@
 import html
+import os
 import json
 import threading
 
@@ -7,11 +8,13 @@ import gi
 gi.require_version("WebKit2", "4.1")
 from gi.repository import Gio, GLib, WebKit2
 
+import cookies
 import dnsresolve
 import rwp
 
 SCHEME = rwp.SCHEME
 MAX_REDIRECTS = 5
+COOKIE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.json")
 
 ERROR_PAGE = """<!DOCTYPE html>
 <html><head><title>{title}</title></head>
@@ -54,8 +57,9 @@ def redirect_page(url):
 
 
 class SchemeHandler:
-    def __init__(self, resolver):
+    def __init__(self, resolver, jar):
         self.resolver = resolver
+        self.jar = jar
 
     def register(self, context):
         context.register_uri_scheme(SCHEME, self.on_request, None)
@@ -101,9 +105,13 @@ class SchemeHandler:
             except dnsresolve.ResolveError as e:
                 return 404, "Not Found", html_type, error_page("Cannot find that site", str(e))
             try:
-                header, data = rwp.request(address, verb, path, body, content_type=content_type, call=call)
+                cookie = self.jar.header_for(host, path)
+                header, data = rwp.request(address, verb, path, body, content_type=content_type, call=call, cookie=cookie)
             except OSError as e:
                 return 502, "Bad Gateway", html_type, error_page("Cannot reach the server", address + ": " + str(e))
+            set_cookies = header.get("cookies")
+            if isinstance(set_cookies, list):
+                self.jar.store(host, path, set_cookies)
             location = header.get("location")
             if header.get("status") not in (301, 302, 303, 307, 308) or not location:
                 status = int(header.get("status", 502))
@@ -129,5 +137,7 @@ class SchemeHandler:
         return False
 
 
-def install(resolver, web_view):
-    SchemeHandler(resolver).register(web_view.get_context())
+def install(resolver, web_view, jar=None):
+    if jar == None:
+        jar = cookies.CookieJar(COOKIE_FILE)
+    SchemeHandler(resolver, jar).register(web_view.get_context())
