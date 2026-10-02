@@ -60,6 +60,18 @@ class SchemeHandler:
     def __init__(self, resolver, jar):
         self.resolver = resolver
         self.jar = jar
+        self.security = {}
+        self.security_lock = threading.Lock()
+
+    def security_for(self, uri):
+        with self.security_lock:
+            return self.security.get(uri.split("#", 1)[0])
+
+    def remember_security(self, uri, level):
+        with self.security_lock:
+            if len(self.security) > 500:
+                self.security.clear()
+            self.security[uri.split("#", 1)[0]] = level
 
     def register(self, context):
         context.register_uri_scheme(SCHEME, self.on_request, None)
@@ -117,14 +129,17 @@ class SchemeHandler:
         host, path = split_uri(uri)
         for _ in range(MAX_REDIRECTS + 1):
             try:
-                address = self.resolver.resolve(host).address
+                answer = self.resolver.resolve(host)
+                address = answer.address
             except dnsresolve.ResolveError as e:
                 return 404, "Not Found", html_type, error_page("Cannot find that site", str(e))
             try:
                 cookie = self.jar.header_for(host, path)
-                header, data = rwp.request(address, verb, path, body, content_type=content_type, call=call, cookie=cookie)
+                header, data, security = rwp.secure_request(address, verb, path, body, content_type=content_type, call=call, cookie=cookie, fingerprint=answer.fingerprint)
             except OSError as e:
                 return 502, "Bad Gateway", html_type, error_page("Cannot reach the server", address + ": " + str(e))
+            if navigation:
+                self.remember_security(uri, security)
             set_cookies = header.get("cookies")
             if isinstance(set_cookies, list):
                 self.jar.store(host, path, set_cookies)
@@ -156,4 +171,6 @@ class SchemeHandler:
 def install(resolver, web_view, jar=None):
     if jar == None:
         jar = cookies.CookieJar(COOKIE_FILE)
-    SchemeHandler(resolver, jar).register(web_view.get_context())
+    handler = SchemeHandler(resolver, jar)
+    handler.register(web_view.get_context())
+    return handler

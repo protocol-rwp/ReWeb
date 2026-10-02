@@ -38,6 +38,27 @@ Other servers pick up your claim (and you pick up theirs) via
 `python3 dnsroots.py sync`, once you've added each other as peers with
 `python3 dnsroots.py peer <host>:<port>`.
 
+## Encryption
+RWP connections are encrypted with TLS on the same port as plain RWP, so
+old clients keep working. On first start `server.py` creates
+`rwp_tls_key.pem` / `rwp_tls_cert.pem` and prints its **TLS fingerprint**.
+Keep the key file private and back it up: deleting it changes the fingerprint.
+
+Publish the fingerprint in DNS so browsers can check they reached the real server:
+`python3 dnsreg.py fingerprint mysite.rws <fingerprint>` (or include a
+`fingerprint` field in a name request).
+
+What the browser does:
+- **Fingerprint in DNS:** TLS is required and the server key must match, with no
+  fallback. The status bar says "encrypted, server key verified".
+- **No fingerprint:** it uses TLS if the server supports it ("encrypted").
+  It only falls back to plain RWP ("NOT encrypted") for servers that don't
+  support TLS, and it never falls back for an address that has already used TLS.
+
+Upgrade a server **before** adding its fingerprint, or lookups for that name will fail.
+Fingerprints are only fully trustworthy when the TLD key is pinned (below),
+because the pin is what makes the DNS answer itself trustworthy.
+
 ## Pinning a TLD key
 Claims are first-come, so a browser that has never seen a TLD will accept
 whichever claim reaches it first. To lock a TLD to its real owner, pin the
