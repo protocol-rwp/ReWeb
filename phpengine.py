@@ -11,7 +11,7 @@ class PhpError(Exception):
     pass
 
 
-def make_env(file_path, root, method, path, query_string, content_type, body, client_ip, host, port):
+def make_env(file_path, root, method, path, query_string, content_type, body, client_ip, host, port, cookie):
     env = {}
     env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
     env["GATEWAY_INTERFACE"] = "CGI/1.1"
@@ -29,6 +29,8 @@ def make_env(file_path, root, method, path, query_string, content_type, body, cl
     env["QUERY_STRING"] = query_string
     env["REMOTE_ADDR"] = client_ip
     env["REDIRECT_STATUS"] = "200"
+    if cookie:
+        env["HTTP_COOKIE"] = cookie
     if method == "POST":
         env["CONTENT_TYPE"] = content_type
         env["CONTENT_LENGTH"] = str(len(body))
@@ -42,17 +44,22 @@ def parse_output(output):
         sep = output.find(b"\n\n")
         sep_len = 2
     if sep == -1:
-        return {}, output
+        return {}, [], output
     headers = {}
+    cookies = []
     for line in output[:sep].decode("latin-1").splitlines():
         if ":" in line:
             key, value = line.split(":", 1)
-            headers[key.strip().lower()] = value.strip()
-    return headers, output[sep + sep_len:]
+            key = key.strip().lower()
+            if key == "set-cookie":
+                cookies.append(value.strip())
+            else:
+                headers[key] = value.strip()
+    return headers, cookies, output[sep + sep_len:]
 
 
-def run(file_path, root, method, path, query_string="", content_type="", body=b"", client_ip="", host="", port=0):
-    env = make_env(file_path, root, method, path, query_string, content_type, body, client_ip, host, port)
+def run(file_path, root, method, path, query_string="", content_type="", body=b"", client_ip="", host="", port=0, cookie=""):
+    env = make_env(file_path, root, method, path, query_string, content_type, body, client_ip, host, port, cookie)
     try:
         p = subprocess.run([PHP_CGI], input=body, env=env, cwd=os.path.dirname(os.path.abspath(file_path)), capture_output=True, timeout=PROCESS_TIMEOUT)
     except FileNotFoundError:
@@ -64,7 +71,7 @@ def run(file_path, root, method, path, query_string="", content_type="", body=b"
     if p.stdout == b"" and p.returncode != 0:
         raise PhpError(p.stderr.decode("utf-8", errors="replace").strip() or "php-cgi failed")
 
-    headers, page = parse_output(p.stdout)
+    headers, cookies, page = parse_output(p.stdout)
     status = "200 OK"
     if "status" in headers:
         status = headers["status"]
@@ -76,4 +83,4 @@ def run(file_path, root, method, path, query_string="", content_type="", body=b"
     elif "location" in headers:
         status = "302 Found"
     content_type = headers.get("content-type", "text/html; charset=utf-8")
-    return status, page, content_type, headers.get("location")
+    return status, page, content_type, headers.get("location"), cookies

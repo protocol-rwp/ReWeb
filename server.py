@@ -1,6 +1,7 @@
 import socket
 import ssl
 import os
+import sys
 import html
 import json
 import threading
@@ -12,6 +13,14 @@ import dnsroots
 import jsengine
 import phpengine
 import rwp
+
+for _dir in (os.path.dirname(os.path.abspath(__file__)), os.path.join(os.path.dirname(os.path.abspath(__file__)), "synapse")):
+    if os.path.isfile(os.path.join(_dir, "search_page.py")):
+        sys.path.insert(0, _dir)
+try:
+    import search_page
+except ImportError:
+    search_page = None
 
 HOST = "127.0.0.1"
 PORT = rwp.DEFAULT_PORT
@@ -74,12 +83,23 @@ def safe_file_path(url_path):
     return full
 
 
-def build_response(status_line, body, content_type="text/html; charset=utf-8", location=None):
+def build_response(status_line, body, content_type="text/html; charset=utf-8", location=None, cookies=None):
     code, reason = status_line.split(" ", 1)
     header = {"status": int(code), "reason": reason, "type": content_type}
     if location != None:
         header["location"] = location
+    if cookies:
+        header["cookies"] = cookies
     return rwp.encode(header, body)
+
+
+def parse_cookies(cookie):
+    result = {}
+    for part in cookie.split(";"):
+        name, sep, value = part.partition("=")
+        if sep != "" and name.strip() != "":
+            result[name.strip()] = value.strip()
+    return result
 
 
 def parse_body(headers, body):
@@ -211,6 +231,10 @@ def handle_request(header, body, client_ip=""):
     if header.get("call"):
         headers["x-reweb-call"] = str(header["call"])
 
+    cookie = header.get("cookie")
+    if not isinstance(cookie, str):
+        cookie = ""
+
     split = urlsplit(target)
     path = split.path
     query = parse_qs(split.query)
@@ -240,6 +264,13 @@ def handle_request(header, body, client_ip=""):
             wants_json = True
         return handle_dns_request(form, client_ip, as_json=wants_json)
 
+    if search_page != None and method == "GET":
+        found = search_page.handle(path, split.query)
+        if found != None:
+            if found[0] == 302:
+                return build_response("302 Found", b"", location="/")
+            return build_response("200 OK", found[1], found[2])
+
     file_path = safe_file_path(path)
     if file_path == None:
         return build_response("403 Forbidden", "<h1>403 Forbidden</h1>")
@@ -257,7 +288,7 @@ def handle_request(header, body, client_ip=""):
         request_vars = {}
         for k in query:
             request_vars[k] = query[k][-1]
-        variables = {"request": request_vars, "post": form, "method": method}
+        variables = {"request": request_vars, "post": form, "method": method, "cookies": parse_cookies(cookie)}
         if "x-reweb-call" in headers:
             return handle_rpc(file_path, headers["x-reweb-call"], form, variables, method)
         try:
@@ -269,11 +300,11 @@ def handle_request(header, body, client_ip=""):
 
     if file_path.endswith(".php"):
         try:
-            status, body_out, content_type, location = phpengine.run(file_path, WWW_ROOT, method, path, split.query, headers.get("content-type", ""), body, client_ip, HOST, PORT)
+            status, body_out, content_type, location, cookies = phpengine.run(file_path, WWW_ROOT, method, path, split.query, headers.get("content-type", ""), body, client_ip, HOST, PORT, cookie)
         except phpengine.PhpError as e:
             error_html = "<h1>500 Script Error</h1><pre>" + html.escape(str(e)) + "</pre>"
             return build_response("500 Internal Server Error", error_html)
-        return build_response(status, body_out, content_type, location)
+        return build_response(status, body_out, content_type, location, cookies)
 
     if method == "POST":
         return build_response("405 Method Not Allowed", "<h1>405 Method Not Allowed</h1>")
