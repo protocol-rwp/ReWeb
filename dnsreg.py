@@ -31,6 +31,7 @@ NAME_RE = re.compile(r"^" + LABEL + r"(?:\." + LABEL + r")*$")
 WILD_RE = re.compile(r"^\*(?:\." + LABEL + r")+$")
 TLD_RE = re.compile(r"^" + LABEL + r"$")
 IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
 last_request_at = {}
 
@@ -41,6 +42,7 @@ python3 dnsreg.py zone                  show the live zone
 python3 dnsreg.py add <name> <host:port> [ttl]
 python3 dnsreg.py alias <name> <target> [ttl]
 python3 dnsreg.py remove <name>
+python3 dnsreg.py fingerprint <name> <hex|none>   set the server's TLS fingerprint (printed by server.py at startup)
 python3 dnsreg.py resolve <name>        answer a query the way clients see it
 python3 dnsreg.py roots                 show the TLD to DNS server map
 """
@@ -147,6 +149,8 @@ def normalize_records(raw):
             record = {"address": str(value["address"]).strip().lower(), "ttl": ttl}
         else:
             continue
+        if "address" in record and clean_fingerprint(value.get("fingerprint")):
+            record["fingerprint"] = clean_fingerprint(value.get("fingerprint"))
         if value.get("added"):
             record["added"] = str(value["added"])[:200]
         if value.get("contact"):
@@ -245,6 +249,24 @@ def validate_address(address):
     return host + ":" + str(int(port))
 
 
+def clean_fingerprint(value):
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower().replace(":", "")
+    if FINGERPRINT_RE.match(value):
+        return value
+    return None
+
+
+def validate_fingerprint(value):
+    if value == None or str(value).strip() == "":
+        return None
+    fingerprint = clean_fingerprint(str(value))
+    if fingerprint == None:
+        raise DnsError("Fingerprint must be 64 hex characters (server.py prints it at startup).")
+    return fingerprint
+
+
 def lookup(records, name):
     if name in records:
         return records[name]
@@ -273,7 +295,10 @@ def resolve(name, zone=None):
         if record_ttl < ttl:
             ttl = record_ttl
         if "address" in record:
-            return {"name": name, "address": record["address"], "ttl": ttl, "chain": chain}
+            answer = {"name": name, "address": record["address"], "ttl": ttl, "chain": chain}
+            if record.get("fingerprint"):
+                answer["fingerprint"] = record["fingerprint"]
+            return answer
         target = record.get("alias", "")
         if target in chain:
             raise DnsError("Alias loop at '" + target + "'.")
@@ -318,6 +343,31 @@ def add_alias(name, target, ttl=DEFAULT_TTL, overwrite=False):
     return name, target
 
 
+def set_fingerprint(name, fingerprint):
+    if name == None:
+        name = ""
+    name = name.strip().lower()
+    if str(fingerprint).strip().lower() == "none":
+        fingerprint = None
+    else:
+        fingerprint = validate_fingerprint(fingerprint)
+        if fingerprint == None:
+            raise DnsError("Give a fingerprint, or 'none' to remove it.")
+    with registry_lock():
+        zone = load_zone()
+        record = zone["records"].get(name)
+        if record == None:
+            raise NXDomain("No record for '" + name + "'.")
+        if "address" not in record:
+            raise DnsError("'" + name + "' is an alias; set the fingerprint on the name it points to.")
+        if fingerprint == None:
+            record.pop("fingerprint", None)
+        else:
+            record["fingerprint"] = fingerprint
+        save_zone(zone)
+    return name, fingerprint
+
+
 def remove_record(name):
     if name == None:
         name = ""
@@ -356,10 +406,11 @@ def is_private_host(host):
     return a in (0, 10, 127) or (a == 169 and b == 254) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 100 and 64 <= b <= 127) or a >= 224
 
 
-def add_request(name, address, contact="", client_ip=""):
+def add_request(name, address, contact="", client_ip="", fingerprint=None):
     claim_tld()
     name = validate_name(name, allow_wildcard=False)
     address = validate_address(address)
+    fingerprint = validate_fingerprint(fingerprint)
     if is_private_host(address.rsplit(":", 1)[0]):
         raise DnsError("Address must be a public host; local and private network addresses can't be registered.")
     throttle(client_ip)
@@ -379,6 +430,8 @@ def add_request(name, address, contact="", client_ip=""):
         new_request["address"] = address
         new_request["contact"] = contact.strip()[:200]
         new_request["requested"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if fingerprint:
+            new_request["fingerprint"] = fingerprint
         pending.append(new_request)
         save_file(REQUESTS_FILE, pending)
     return name
@@ -404,6 +457,8 @@ def approve(name):
         record = {"address": request["address"], "ttl": DEFAULT_TTL, "added": time.strftime("%Y-%m-%d %H:%M:%S")}
         if request.get("contact"):
             record["contact"] = request["contact"]
+        if clean_fingerprint(request.get("fingerprint")):
+            record["fingerprint"] = clean_fingerprint(request.get("fingerprint"))
         zone["records"][request["name"]] = record
         save_zone(zone)
         save_file(REQUESTS_FILE, pending)
@@ -506,6 +561,13 @@ def main(argv):
                 ttl = DEFAULT_TTL
             name, target = add_alias(args[1], args[2], ttl, overwrite=force)
             print("added " + name + " ~> " + target)
+
+        elif cmd == "fingerprint" and len(args) == 3:
+            name, fingerprint = set_fingerprint(args[1], args[2])
+            if fingerprint:
+                print("set fingerprint for " + name + " to " + fingerprint)
+            else:
+                print("removed fingerprint for " + name)
 
         elif cmd == "remove" and len(args) == 2:
             print("removed " + remove_record(args[1]))

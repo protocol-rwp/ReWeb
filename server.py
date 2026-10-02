@@ -1,4 +1,5 @@
 import socket
+import ssl
 import os
 import html
 import json
@@ -158,7 +159,7 @@ def handle_dns_info():
 
 def handle_dns_request(form, client_ip, as_json=False):
     try:
-        name = dnsreg.add_request(form.get("name", ""), form.get("address", ""), form.get("contact", ""), client_ip=client_ip)
+        name = dnsreg.add_request(form.get("name", ""), form.get("address", ""), form.get("contact", ""), client_ip=client_ip, fingerprint=form.get("fingerprint"))
     except dnsreg.DnsError as e:
         if as_json == True:
             return json_response(dns_status_for(e), {"error": str(e)})
@@ -286,10 +287,15 @@ def handle_request(header, body, client_ip=""):
     return build_response("200 OK", body_out, guess_content_type(file_path))
 
 
-def handle_connection(conn, addr, slots):
+def handle_connection(conn, addr, slots, tls_ctx):
     try:
         conn.settimeout(5)
         try:
+            try:
+                conn = rwp.accept_tls(conn, tls_ctx)
+            except ssl.SSLError as e:
+                print("TLS handshake failed:", e)
+                return
             try:
                 header, body = rwp.read_frame(conn, MAX_BODY, deadline=time.monotonic() + READ_DEADLINE)
             except rwp.ProtocolError as e:
@@ -310,7 +316,10 @@ def handle_connection(conn, addr, slots):
         except (socket.timeout, OSError) as e:
             print("Connection problem:", e)
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except OSError:
+            pass
         slots.release()
 
 
@@ -320,7 +329,9 @@ def main():
     server.bind((HOST, PORT))
     server.listen()
 
+    tls_ctx = rwp.server_context(BASE)
     print("Server listening on " + rwp.SCHEME + "://" + HOST + ":" + str(PORT))
+    print("TLS fingerprint: " + rwp.server_fingerprint(BASE))
     try:
         info = dnsreg.server_info()
         print("DNS: authoritative for ." + info["tld"] + " (" + str(info["records"]) + " record(s), " + str(info["pending"]) + " pending) at " + rwp.SCHEME + "://" + HOST + ":" + str(PORT) + DNS_RESOLVE_PATH + "?name=example." + info["tld"])
@@ -345,7 +356,7 @@ def main():
                 pass
             conn.close()
             continue
-        threading.Thread(target=handle_connection, args=(conn, addr, slots), daemon=True).start()
+        threading.Thread(target=handle_connection, args=(conn, addr, slots, tls_ctx), daemon=True).start()
 
     server.close()
 

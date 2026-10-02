@@ -26,9 +26,10 @@ class ResolveError(Exception):
 
 
 class Answer:
-    def __init__(self, name, address, ttl=0, source="", chain=None):
+    def __init__(self, name, address, ttl=0, source="", chain=None, fingerprint=None):
         self.name = name
         self.address = address
+        self.fingerprint = fingerprint
         self.ttl = ttl
         self.source = source
         if chain:
@@ -164,7 +165,7 @@ class Resolver:
         source = server
         if status == "signed":
             source = server + ", signed"
-        return Answer(name, address, ttl, source, chain)
+        return Answer(name, address, ttl, source, chain, rwp.clean_fingerprint(payload.get("fingerprint")))
 
     def zone(self, tld):
         server = self.load_roots()["tlds"].get(tld.lower().lstrip("."))
@@ -195,7 +196,7 @@ class Resolver:
         if isinstance(cached, ResolveError):
             raise cached
         if cached != None:
-            return Answer(cached.name, cached.address, cached.ttl, "cache", cached.chain)
+            return Answer(cached.name, cached.address, cached.ttl, "cache", cached.chain, cached.fingerprint)
 
         if "." not in name:
             raise ResolveError("'" + name + "' is not a full name. Try a name with a TLD (e.g. " + name + ".site) or a literal host:port.")
@@ -236,7 +237,7 @@ class Resolver:
             return None
         except dnsreg.DnsError:
             return None
-        return Answer(name, found["address"], found["ttl"], "local zone", found["chain"])
+        return Answer(name, found["address"], found["ttl"], "local zone", found["chain"], found.get("fingerprint"))
 
 
 default = None
@@ -273,6 +274,8 @@ def main(argv):
             path = " -> ".join(answer.chain)
             print(path + " => " + answer.address)
             print("  via " + answer.source + ", ttl " + str(answer.ttl))
+            if answer.fingerprint:
+                print("  server key " + answer.fingerprint)
         else:
             print(USAGE)
             return 1

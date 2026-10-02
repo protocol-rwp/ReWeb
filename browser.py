@@ -113,6 +113,7 @@ class Browser:
     def __init__(self):
         self.resolver = dnsresolve.Resolver()
         self.scheme_installed = False
+        self.scheme_handler = None
         self.history = []
         self.history_index = -1
         self.programmatic = True
@@ -137,7 +138,7 @@ class Browser:
         def go():
             view = webview_gtk.BrowserView.instances[self.window.uid].webview
             if self.scheme_installed == False:
-                scheme.install(self.resolver, view)
+                self.scheme_handler = scheme.install(self.resolver, view)
                 self.scheme_installed = True
             view.load_uri(url)
             return False
@@ -193,8 +194,20 @@ class Browser:
             self.history = self.history[:self.history_index + 1]
             self.history.append(friendly)
             self.history_index = len(self.history) - 1
-        self.inject_toolbar(friendly, "Done (" + url + ")")
+        self.inject_toolbar(friendly, "Done (" + url + ")" + self.security_label(url))
         self.update_title()
+
+    def security_label(self, url):
+        if not url.startswith(scheme.SCHEME + "://") or self.scheme_handler == None:
+            return ""
+        level = self.scheme_handler.security_for(url)
+        if level == "verified":
+            return " - encrypted, server key verified"
+        if level == "encrypted":
+            return " - encrypted"
+        if level == "plain":
+            return " - NOT encrypted"
+        return ""
 
     def update_title(self):
         try:
