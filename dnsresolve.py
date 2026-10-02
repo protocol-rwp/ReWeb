@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -56,6 +57,7 @@ class Resolver:
         self.timeout = timeout
         self.local_zone = local_zone
         self.cache = {}
+        self.cache_lock = threading.Lock()
         self.roots = {"hosts": {}, "tlds": {}}
         self.roots_mtime = None
         self.load_roots()
@@ -100,23 +102,26 @@ class Resolver:
         return roots["tlds"].get(tld), tld
 
     def clear_cache(self):
-        self.cache.clear()
+        with self.cache_lock:
+            self.cache.clear()
 
     def cached(self, name):
-        if name not in self.cache:
-            return None
-        entry = self.cache[name]
-        expires_at = entry[0]
-        value = entry[1]
-        if time.monotonic() >= expires_at:
-            del self.cache[name]
-            return None
-        return value
+        with self.cache_lock:
+            entry = self.cache.get(name)
+            if entry == None:
+                return None
+            expires_at = entry[0]
+            value = entry[1]
+            if time.monotonic() >= expires_at:
+                self.cache.pop(name, None)
+                return None
+            return value
 
     def remember(self, name, value, ttl):
         if ttl < 1:
             ttl = 1
-        self.cache[name] = (time.monotonic() + ttl, value)
+        with self.cache_lock:
+            self.cache[name] = (time.monotonic() + ttl, value)
 
     def get_json(self, server, path):
         try:
@@ -149,7 +154,10 @@ class Resolver:
             status = dnsroots.verify_doc("answer", payload, tld)
         except dnsroots.RootError as e:
             raise ResolveError("Rejected answer from " + server + ": " + str(e))
-        ttl = int(payload.get("ttl") or NEGATIVE_TTL)
+        try:
+            ttl = int(payload.get("ttl") or NEGATIVE_TTL)
+        except (TypeError, ValueError):
+            ttl = NEGATIVE_TTL
         if status == "signed":
             ttl = max(1, min(ttl, int(payload["expires"] - time.time())))
         chain = payload.get("chain") or [name]

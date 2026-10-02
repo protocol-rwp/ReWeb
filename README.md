@@ -38,6 +38,23 @@ Other servers pick up your claim (and you pick up theirs) via
 `python3 dnsroots.py sync`, once you've added each other as peers with
 `python3 dnsroots.py peer <host>:<port>`.
 
+## Pinning a TLD key
+Claims are first-come, so a browser that has never seen a TLD will accept
+whichever claim reaches it first. To lock a TLD to its real owner, pin the
+owner's public key in `dns_roots.json`:
+
+```json
+{
+    "tlds": {"rws": "24.144.109.255:5000"},
+    "keys": {"rws": "<64 hex chars from: python3 dnsroots.py pubkey>"}
+}
+```
+
+Once a key is pinned, answers for that TLD must be signed by that key, and
+claims signed by any other key are ignored. Make sure the DNS server has a key
+(`python3 dnsroots.py claim <host>:<port>`) **before** shipping the pin, or
+lookups for that TLD will fail.
+
 ## Where to get a free site name
 In the ReWeb browser enter `reweb.rws/request.html` into the input bar and fill out the form.
 

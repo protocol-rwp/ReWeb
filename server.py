@@ -2,6 +2,8 @@ import socket
 import os
 import html
 import json
+import threading
+import time
 from urllib.parse import urlsplit, parse_qs, unquote
 
 import dnsreg
@@ -16,6 +18,8 @@ PORT = rwp.DEFAULT_PORT
 BASE = os.path.dirname(os.path.abspath(__file__))
 WWW_ROOT = os.path.join(BASE, "www")
 MAX_BODY = rwp.MAX_REQUEST_BODY
+MAX_CONNECTIONS = 64
+READ_DEADLINE = 30
 
 DNS_REQUEST_PATH = "/dns-request"
 DNS_RESOLVE_PATH = "/dns/resolve"
@@ -59,6 +63,9 @@ def safe_file_path(url_path):
     decoded = unquote(url_path)
     if "\0" in decoded:
         return None
+    for part in decoded.replace("\\", "/").split("/"):
+        if part.startswith(".") and part not in (".", "..", ".well-known"):
+            return None
     relative = os.path.normpath(decoded).lstrip("/\\")
     full = os.path.join(WWW_ROOT, relative)
     if full != WWW_ROOT and not full.startswith(WWW_ROOT + os.sep):
@@ -279,6 +286,34 @@ def handle_request(header, body, client_ip=""):
     return build_response("200 OK", body_out, guess_content_type(file_path))
 
 
+def handle_connection(conn, addr, slots):
+    try:
+        conn.settimeout(5)
+        try:
+            try:
+                header, body = rwp.read_frame(conn, MAX_BODY, deadline=time.monotonic() + READ_DEADLINE)
+            except rwp.ProtocolError as e:
+                print("Bad message:", e)
+                conn.sendall(build_response("400 Bad Request", "<h1>400 Bad Request</h1>"))
+                return
+
+            print("--- Request ---")
+            print(str(header.get("verb")) + " " + str(header.get("path")))
+
+            try:
+                response = handle_request(header, body, client_ip=addr[0])
+            except Exception as e:
+                print("Error handling request:", e)
+                response = build_response("500 Internal Server Error", "<h1>500 Internal Server Error</h1>")
+            conn.settimeout(30)
+            conn.sendall(response)
+        except (socket.timeout, OSError) as e:
+            print("Connection problem:", e)
+    finally:
+        conn.close()
+        slots.release()
+
+
 def main():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -292,6 +327,7 @@ def main():
     except dnsreg.DnsError as e:
         print("DNS: not serving any TLD - " + str(e))
 
+    slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
     while True:
         try:
             conn, addr = server.accept()
@@ -300,28 +336,16 @@ def main():
             break
 
         print("Connected by:", addr)
-        conn.settimeout(5)
-        try:
+        if not slots.acquire(blocking=False):
+            print("Too many connections, turning away", addr)
             try:
-                header, body = rwp.read_frame(conn, MAX_BODY)
-            except rwp.ProtocolError as e:
-                print("Bad message:", e)
-                conn.sendall(build_response("400 Bad Request", "<h1>400 Bad Request</h1>"))
-                conn.close()
-                continue
-
-            print("--- Request ---")
-            print(str(header.get("verb")) + " " + str(header.get("path")))
-
-            try:
-                response = handle_request(header, body, client_ip=addr[0])
-            except Exception as e:
-                print("Error handling request:", e)
-                response = build_response("500 Internal Server Error", "<h1>500 Internal Server Error</h1>")
-            conn.sendall(response)
-        except (socket.timeout, OSError) as e:
-            print("Connection problem:", e)
-        conn.close()
+                conn.settimeout(2)
+                conn.sendall(build_response("503 Service Unavailable", "<h1>503 Server Busy</h1>"))
+            except OSError:
+                pass
+            conn.close()
+            continue
+        threading.Thread(target=handle_connection, args=(conn, addr, slots), daemon=True).start()
 
     server.close()
 

@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import threading
 import time
+from datetime import timezone
 from email.utils import parsedate_to_datetime
 
 
@@ -22,10 +24,14 @@ def path_matches(request_path, cookie_path):
 
 
 def parse_expires(value):
+    value = re.sub(r"(\d{1,2})-([A-Za-z]{3})-(\d{2,4})", r"\1 \2 \3", value)
     try:
-        return parsedate_to_datetime(value.replace("-", " ")).timestamp()
+        when = parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return None
+    if when.tzinfo == None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.timestamp()
 
 
 def parse_set_cookie(line, request_path):
@@ -115,9 +121,10 @@ class CookieJar:
         keep = [c for c in self.cookies.values() if c["expires"] != None and c["expires"] > now]
         tmp = self.path + ".tmp"
         try:
-            f = open(tmp, "w")
-            json.dump(keep, f)
-            f.close()
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(keep, f)
+            os.chmod(tmp, 0o600)
             os.replace(tmp, self.path)
         except OSError as e:
-            print("what " + str(e))
+            print("Could not save cookies: " + str(e))
