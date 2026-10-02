@@ -1,6 +1,11 @@
 # ReWeb
+
+<img src="https://github.com/protocol-rwp/ReWeb/blob/main/reweb.png?raw=true" alt="Screenshot" width="70%">
+
 ReWeb is a from-scratch alternative to the web.
 Using its own transport protocol instead of HTTP, its own decentralized naming system instead of DNS.
+[Quick install](/install.sh)
+[Protocol spec](/SPEC.md)
 
 - **Decentralized DNS** (`dnsroots.py`, `dnsresolve.py`, `dnsreg.py`) TLDs
   are owned by whoever holds the Ed25519 key that first claimed them.
