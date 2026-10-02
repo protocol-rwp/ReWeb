@@ -174,7 +174,7 @@ def open_connection(address, timeout, fingerprint=None, tls="auto"):
     with tls_lock:
         seen = address in tls_seen
         plain_ok = plaintext_until.get(address, 0) > now
-    if fingerprint == None and not seen and (tls == "off" or (tls == "auto" and plain_ok)):
+    if tls == "off" or (fingerprint == None and not seen and tls == "auto" and plain_ok):
         return socket.create_connection((host, port), timeout=timeout), SECURITY_PLAIN
     raw = socket.create_connection((host, port), timeout=timeout)
     try:
