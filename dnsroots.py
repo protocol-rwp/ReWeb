@@ -14,6 +14,7 @@ CLAIMS_FILE = os.path.join(BASE, "dns_claims.json")
 PEERS_FILE = os.path.join(BASE, "dns_peers.json")
 KEY_FILE = os.path.join(BASE, "dns_key.json")
 SERVER_FILE = os.path.join(BASE, "dns_server.json")
+ROOTS_FILE = os.path.join(BASE, "dns_roots.json")
 
 TIMEOUT = 5
 MAX_ANSWER = 512000
@@ -24,15 +25,18 @@ SYNC_COOLDOWN = 30
 
 TLD_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 HOSTPORT_RE = re.compile(r"^[A-Za-z0-9.-]+:\d{1,5}$")
+PUBKEY_RE = re.compile(r"^[0-9a-f]{64}$")
 
 USAGE = """python3 dnsroots.py claim <host:port>   sign and publish a claim for this server's TLD
 python3 dnsroots.py sync                gossip with peers and merge their claims
+python3 dnsroots.py pubkey              print this server's public key (to pin in dns_roots.json "keys")
 python3 dnsroots.py list                show known TLDs and who owns them
 python3 dnsroots.py peers               show the peer list
 python3 dnsroots.py peer <host:port>    add a peer
 """
 
 last_sync_at = 0
+claims_cache = None
 
 
 class RootError(Exception):
@@ -56,6 +60,9 @@ def save_file(path, data):
     f.write("\n")
     f.close()
     os.replace(tmp, path)
+    if path == CLAIMS_FILE:
+        global claims_cache
+        claims_cache = None
 
 
 def signing_bytes(claim):
@@ -93,10 +100,26 @@ def check_claim(claim):
     return claim
 
 
-def merge_claim(claims, claim):
+def pinned_keys():
+    raw = load_file(ROOTS_FILE, {})
+    keys = {}
+    if isinstance(raw, dict) and isinstance(raw.get("keys"), dict):
+        for tld in raw["keys"]:
+            key = str(raw["keys"][tld]).strip().lower()
+            if PUBKEY_RE.match(key):
+                keys[str(tld).strip().lower().lstrip(".")] = key
+    return keys
+
+
+def merge_claim(claims, claim, pins=None):
     claim = check_claim(claim)
+    if pins == None:
+        pins = pinned_keys()
+    pinned = pins.get(claim["tld"])
+    if pinned != None and claim["pubkey"] != pinned:
+        return False
     have = claims.get(claim["tld"])
-    if have == None:
+    if have == None or (pinned != None and have["pubkey"] != pinned):
         claims[claim["tld"]] = claim
         return True
     if have["pubkey"] != claim["pubkey"]:
@@ -108,17 +131,39 @@ def merge_claim(claims, claim):
 
 
 def load_claims():
+    global claims_cache
+    stamp = (file_stamp(CLAIMS_FILE), file_stamp(ROOTS_FILE))
+    if claims_cache != None and claims_cache[0] == stamp:
+        return dict(claims_cache[1])
+    claims = read_claims()
+    claims_cache = (stamp, claims)
+    return dict(claims)
+
+
+def file_stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def read_claims():
     raw = load_file(CLAIMS_FILE, {})
     claims = {}
     if not isinstance(raw, dict):
         return claims
+    pins = pinned_keys()
     for tld in raw:
         try:
             claim = check_claim(raw[tld])
         except RootError:
             continue
-        if claim["tld"] == tld:
-            claims[tld] = claim
+        if claim["tld"] != tld:
+            continue
+        if tld in pins and claim["pubkey"] != pins[tld]:
+            continue
+        claims[tld] = claim
     return claims
 
 
@@ -182,14 +227,17 @@ def sign_doc(kind, doc, valid_for):
 
 
 def verify_doc(kind, doc, tld):
-    claim = load_claims().get(tld)
-    if claim == None:
-        return "unverified"
+    pubkey = pinned_keys().get(tld)
+    if pubkey == None:
+        claim = load_claims().get(tld)
+        if claim == None:
+            return "unverified"
+        pubkey = claim["pubkey"]
     sig = doc.get("sig")
     if not isinstance(sig, str):
         raise RootError("." + tld + " is claimed by a key but this answer is not signed.")
     try:
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(claim["pubkey"])).verify(bytes.fromhex(sig), doc_bytes(kind, doc))
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(pubkey)).verify(bytes.fromhex(sig), doc_bytes(kind, doc))
     except (ValueError, InvalidSignature) as e:
         raise RootError("signature does not match the key that owns ." + tld)
     issued = doc.get("issued")
@@ -199,7 +247,7 @@ def verify_doc(kind, doc, tld):
     now = time.time()
     if issued > now + MAX_SKEW:
         raise RootError("signed answer is dated in the future")
-    if expires < now:
+    if expires + MAX_SKEW < now:
         raise RootError("signed answer has expired (replayed?)")
     return "signed"
 
@@ -207,6 +255,9 @@ def verify_doc(kind, doc, tld):
 def make_claim(tld, server):
     key = load_key()
     pubkey = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    pinned = pinned_keys().get(tld)
+    if pinned != None and pinned != pubkey:
+        raise RootError("." + tld + " is pinned to key " + pinned[:16] + "... in dns_roots.json and it isn't this server's key.")
     claims = load_claims()
     seq = 1
     have = claims.get(tld)
@@ -261,8 +312,9 @@ def sync():
             pass
     valid.sort(key=lambda c: (c["issued"], c["pubkey"]))
     changed = 0
+    pins = pinned_keys()
     for c in valid:
-        if merge_claim(claims, c):
+        if merge_claim(claims, c, pins):
             changed += 1
     if changed:
         save_file(CLAIMS_FILE, claims)
@@ -290,6 +342,10 @@ def main(argv):
         elif args == ["sync"]:
             r = sync()
             print("reached " + str(r["peers_reached"]) + " peer(s), " + str(r["changed"]) + " claim(s) updated")
+        elif args == ["pubkey"]:
+            if not have_key():
+                raise RootError("This server has no key yet. Run: python3 dnsroots.py claim <host:port>")
+            print(load_key().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex())
         elif args == ["list"]:
             claims = load_claims()
             for tld in sorted(claims):
@@ -318,5 +374,3 @@ def main(argv):
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))
-
-# print("esdrfghjk")

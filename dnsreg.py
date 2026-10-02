@@ -24,6 +24,7 @@ MIN_TTL = 30
 MAX_TTL = 86400
 MAX_ALIAS_HOPS = 8
 REQUEST_COOLDOWN = 30
+MAX_TRACKED_CLIENTS = 10000
 
 LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 NAME_RE = re.compile(r"^" + LABEL + r"(?:\." + LABEL + r")*$")
@@ -103,12 +104,13 @@ def server_config():
 
 def claim_tld():
     tld, owner = server_config()
-    tlds = load_file(TLDS_FILE, {})
-    if tld in tlds and tlds[tld] != owner:
-        raise DnsError("TLD '." + tld + "' belongs to another DNS server (" + str(tlds[tld]) + ").")
-    if tld not in tlds:
-        tlds[tld] = owner
-        save_file(TLDS_FILE, tlds)
+    with registry_lock():
+        tlds = load_file(TLDS_FILE, {})
+        if tld in tlds and tlds[tld] != owner:
+            raise DnsError("TLD '." + tld + "' belongs to another DNS server (" + str(tlds[tld]) + ").")
+        if tld not in tlds:
+            tlds[tld] = owner
+            save_file(TLDS_FILE, tlds)
     return tld
 
 
@@ -338,13 +340,28 @@ def throttle(client_ip):
         if now - last < REQUEST_COOLDOWN:
             wait = int(REQUEST_COOLDOWN - (now - last)) + 1
             raise DnsError("Too many requests; try again in " + str(wait) + " seconds.")
+    if len(last_request_at) >= MAX_TRACKED_CLIENTS:
+        for ip in list(last_request_at):
+            if now - last_request_at.get(ip, now) >= REQUEST_COOLDOWN:
+                last_request_at.pop(ip, None)
     last_request_at[client_ip] = now
+
+
+def is_private_host(host):
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    if not IPV4_RE.match(host):
+        return False
+    a, b = [int(x) for x in host.split(".")[:2]]
+    return a in (0, 10, 127) or (a == 169 and b == 254) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 100 and 64 <= b <= 127) or a >= 224
 
 
 def add_request(name, address, contact="", client_ip=""):
     claim_tld()
     name = validate_name(name, allow_wildcard=False)
     address = validate_address(address)
+    if is_private_host(address.rsplit(":", 1)[0]):
+        raise DnsError("Address must be a public host; local and private network addresses can't be registered.")
     throttle(client_ip)
     with registry_lock():
         if name in load_zone()["records"]:

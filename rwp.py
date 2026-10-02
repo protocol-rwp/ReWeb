@@ -1,6 +1,7 @@
 import json
 import socket
 import struct
+import time
 
 SCHEME = "reweb"
 DEFAULT_PORT = 5001
@@ -26,9 +27,16 @@ def encode(header, body=b""):
     return PREFIX.pack(MAGIC, len(head), len(body)) + head + body
 
 
-def read_exact(conn, count):
+def read_exact(conn, count, deadline=None):
     chunks = []
+    timeout = conn.gettimeout()
     while count > 0:
+        if deadline != None:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise socket.timeout("took too long to send the message")
+            if timeout == None or left < timeout:
+                conn.settimeout(left)
         chunk = conn.recv(min(count, 65536))
         if not chunk:
             raise ProtocolError("connection closed in the middle of a message")
@@ -37,8 +45,8 @@ def read_exact(conn, count):
     return b"".join(chunks)
 
 
-def read_frame(conn, max_body):
-    prefix = read_exact(conn, PREFIX.size)
+def read_frame(conn, max_body, deadline=None):
+    prefix = read_exact(conn, PREFIX.size, deadline)
     magic, head_len, body_len = PREFIX.unpack(prefix)
     if magic != MAGIC:
         raise ProtocolError("not an RWP message")
@@ -47,12 +55,12 @@ def read_frame(conn, max_body):
     if body_len > max_body:
         raise ProtocolError("body too large")
     try:
-        header = json.loads(read_exact(conn, head_len).decode("utf-8"))
+        header = json.loads(read_exact(conn, head_len, deadline).decode("utf-8"))
     except ValueError as e:
         raise ProtocolError("malformed header")
     if not isinstance(header, dict):
         raise ProtocolError("malformed header")
-    return header, read_exact(conn, body_len)
+    return header, read_exact(conn, body_len, deadline)
 
 
 def split_address(address):
@@ -66,7 +74,7 @@ def split_address(address):
     return address, DEFAULT_PORT
 
 
-def request(address, verb, path, body=b"", content_type=None, call=None, timeout=10, max_body=MAX_RESPONSE_BODY):
+def request(address, verb, path, body=b"", content_type=None, call=None, cookie=None, timeout=10, max_body=MAX_RESPONSE_BODY):
     if isinstance(body, str):
         body = body.encode()
     header = {"verb": verb, "path": path}
@@ -74,6 +82,8 @@ def request(address, verb, path, body=b"", content_type=None, call=None, timeout
         header["type"] = content_type
     if call:
         header["call"] = call
+    if cookie:
+        header["cookie"] = cookie
     host, port = split_address(address)
     with socket.create_connection((host, port), timeout=timeout) as s:
         s.sendall(encode(header, body))

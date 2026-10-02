@@ -35,7 +35,7 @@ def split_uri(uri):
     host, sep, path = rest.partition("/")
     if "?" in host:
         host, _, query = host.partition("?")
-        path = "?" + query
+        path = "/?" + query + sep + path
     else:
         path = "/" + path
     return host, path
@@ -52,7 +52,7 @@ def absolute_location(host, path, location):
 
 def redirect_page(url):
     script = json.dumps(url).replace("</", "<\\/")
-    page = '<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=' + html.escape(url, quote=True) + '"></head>'
+    page = '<!DOCTYPE html><html><head><meta name="reweb-redirect"><meta http-equiv="refresh" content="0;url=' + html.escape(url, quote=True) + '"></head>'
     return (page + "<body><script>location.replace(" + script + ")</script></body></html>").encode()
 
 
@@ -70,15 +70,23 @@ class SchemeHandler:
     def on_request(self, request, user_data=None):
         verb = rwp.VERB_FETCH
         body = b""
+        too_large = False
         if request.get_http_method() == "POST":
             verb = rwp.VERB_SEND
             stream = request.get_http_body()
             if stream != None:
-                while len(body) < rwp.MAX_REQUEST_BODY:
+                chunks = []
+                size = 0
+                while True:
                     chunk = stream.read_bytes(65536, None).get_data()
                     if not chunk:
                         break
-                    body = body + chunk
+                    size = size + len(chunk)
+                    if size > rwp.MAX_REQUEST_BODY:
+                        too_large = True
+                        break
+                    chunks.append(chunk)
+                body = b"".join(chunks)
         headers = request.get_http_headers()
         content_type = None
         call = None
@@ -89,11 +97,19 @@ class SchemeHandler:
         else:
             navigation = False
         uri = request.get_uri()
-        t = threading.Thread(target=self.serve, args=(request, uri, verb, body, content_type, call, navigation), daemon=True)
+        t = threading.Thread(target=self.serve, args=(request, uri, verb, body, content_type, call, navigation, too_large), daemon=True)
         t.start()
 
-    def serve(self, request, uri, verb, body, content_type, call, navigation):
-        status, reason, ctype, data = self.fetch(uri, verb, body, content_type, call, navigation)
+    def serve(self, request, uri, verb, body, content_type, call, navigation, too_large=False):
+        html_type = "text/html; charset=utf-8"
+        if too_large:
+            status, reason, ctype, data = 413, "Payload Too Large", html_type, error_page("Upload too large", "The form data is bigger than " + str(rwp.MAX_REQUEST_BODY) + " bytes.")
+        else:
+            try:
+                status, reason, ctype, data = self.fetch(uri, verb, body, content_type, call, navigation)
+            except Exception as e:
+                print("Error while loading " + uri + ": " + repr(e))
+                status, reason, ctype, data = 500, "Internal Error", html_type, error_page("Something went wrong", str(e))
         GLib.idle_add(self.finish, request, status, reason, ctype, data)
 
     def fetch(self, uri, verb, body, content_type, call, navigation):

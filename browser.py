@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 import threading
 
 import webview
@@ -11,6 +12,7 @@ import dnsroots
 import scheme
 
 HOME = "reweb://synapse.rws"
+ALLOWED_PREFIXES = ("reweb://", "http://", "https://")
 
 TOOLBAR_JS = """
 (function () {
@@ -34,8 +36,10 @@ TOOLBAR_JS = """
     "background:#eee; border-bottom:1px solid #999;" +
     "font-family:sans-serif; font-size:13px; box-sizing:border-box;";
   document.documentElement.appendChild(bar);
-  document.body.style.marginTop =
-    (bar.offsetHeight + parseInt(getComputedStyle(document.body).marginTop || 0, 10)) + "px";
+  if (document.body) {
+    document.body.style.marginTop =
+      (bar.offsetHeight + parseInt(getComputedStyle(document.body).marginTop || 0, 10)) + "px";
+  }
 
   bar.querySelector("#__reweb_address").style.cssText = "flex:1;";
   bar.querySelector("#__reweb_status").style.cssText =
@@ -115,7 +119,8 @@ class Browser:
         self.pending_record = True
         t = threading.Thread(target=self.update_dns, daemon=True)
         t.start()
-        self.window = webview.create_window("Reweb Browser", url="about:blank", js_api=self, width=1000, height=700)
+        self.window = webview.create_window("Reweb Browser", url="about:blank", width=1000, height=700)
+        self.window.expose(self.go_back, self.go_forward, self.reload_page, self.go_home, self.navigate, self.flush_dns)
         self.window.events.before_show += lambda: self.load(HOME)
         self.window.events.loaded += self.on_loaded
 
@@ -154,6 +159,9 @@ class Browser:
         if not address:
             return
         url = self.to_url(address)
+        if not url.lower().startswith(ALLOWED_PREFIXES):
+            self.set_status("Blocked: only reweb://, http:// and https:// addresses can be opened.")
+            return
         self.programmatic = True
         self.pending_record = record_history
         self.set_status("Loading " + self.friendly_for_url(url) + " ...")
@@ -165,7 +173,7 @@ class Browser:
 
     def is_redirect_stub(self):
         try:
-            return self.window.evaluate_js("!!document.querySelector('meta[http-equiv=refresh]')") == True
+            return self.window.evaluate_js("!!document.querySelector('meta[name=reweb-redirect]')") == True
         except Exception:
             return False
 
@@ -216,8 +224,8 @@ class Browser:
         self.navigate(HOME)
 
     def inject_toolbar(self, address_text, status_text):
-        script = TOOLBAR_JS.replace("__ADDRESS__", json.dumps(address_text))
-        script = script.replace("__STATUS__", json.dumps(status_text))
+        values = {"__ADDRESS__": json.dumps(address_text), "__STATUS__": json.dumps(status_text)}
+        script = re.sub("__ADDRESS__|__STATUS__", lambda m: values[m.group(0)], TOOLBAR_JS)
         try:
             self.window.evaluate_js(script)
         except Exception as e:
