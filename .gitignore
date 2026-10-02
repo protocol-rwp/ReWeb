@@ -3,3 +3,4 @@ __pycache__/
 rwp_tls_key.pem
 rwp_tls_cert.pem
 dns_key.json
+dns_claims.json
